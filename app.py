@@ -3,6 +3,12 @@ import pandas as pd
 import joblib
 import zipfile
 import os
+from streamlit.components.v1 import html as st_html
+from dotenv import load_dotenv
+import os
+import base64, requests, urllib.parse
+
+load_dotenv()
 
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
@@ -64,6 +70,38 @@ def recommend(song: str, artist: str, df: pd.DataFrame, model, text_pipeline, nu
             break
     return recs
 
+def spotify_link(artist, track):
+    
+    client_id     = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+    # client_id     = "83f63049def741f48e05e1d2b0b89bad"
+    # client_secret = "97c4c4a9f5564091818655a9183a6673"
+
+    auth_header   = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+
+    token_res = requests.post(
+        "https://accounts.spotify.com/api/token",
+        headers={ "Authorization": f"Basic {auth_header}" },
+        data={ "grant_type": "client_credentials" }
+    )
+    token = token_res.json().get("access_token")
+    if not token:
+        return None
+
+    # 2) Perform a track search
+    q   = urllib.parse.quote(f"track:{track} artist:{artist}")
+    url = f"https://api.spotify.com/v1/search?q={q}&type=track&limit=1"
+    res = requests.get(url, headers={ "Authorization": f"Bearer {token}" })
+    items = res.json().get("tracks", {}).get("items", [])
+
+    # 3) Extract and return the track ID
+    if not items:
+        return None
+    return items[0]["id"]
+
+    
+
 def main():
     st.set_page_config(page_title='🎵 Music Recommender', layout='wide')
     st.title('🎵 Music Recommender System')
@@ -96,7 +134,35 @@ def main():
         'energy': 3.0
     }
 
-    st.markdown('## Dataset Overview')
+
+
+    st.markdown('## Get Recommendations')
+    track_list = df['track_name'].unique()
+    artist_list = df['artist_name'].unique()
+    selected_track = st.selectbox('Select a track', track_list, index=0)
+    selected_artist = st.selectbox('Select an artist', artist_list, index=0)
+    num_rec = st.slider('Number of recommendations', 1, 10, 5)
+    if st.button('Recommend'):
+        recs = recommend(selected_track, selected_artist, df, model, text_pipeline, numerical_pipeline, text_features, numerical_features, feature_weights, top_n=num_rec)
+        if recs:
+            for r in recs:
+        # Display title + score
+                st.subheader(f"{r['Track']} — {r['Artist']}  |  Score: {r['Score']}")
+                artist = r['Artist']
+                song  = r['Track']
+                a = f"https://open.spotify.com/embed/track/{spotify_link(artist, song)}"
+                # Build and render the Spotify iframe
+                iframe = f"""
+                <iframe style="border-radius:12px"
+                        src="{a}"
+                        width="300" height="80" frameborder="0"
+                        allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                        loading="lazy">
+                </iframe>
+                """
+                st_html(iframe, height=100)
+
+        st.markdown('## Dataset Overview')
     col1, col2, col3 = st.columns(3)
     col1.metric('Total Songs', df.shape[0])
     col2.metric('Unique Artists', df['artist_name'].nunique())
@@ -105,20 +171,5 @@ def main():
     st.markdown('### Top 10 Genres')
     genre_counts = df['genre'].value_counts().nlargest(10)
     st.bar_chart(genre_counts)
-
-    st.markdown('## Get Recommendations')
-    track_list = sorted(df['track_name'].unique())
-    artist_list = sorted(df['artist_name'].unique())
-    selected_track = st.selectbox('Select a track', track_list)
-    selected_artist = st.selectbox('Select an artist', artist_list)
-    num_rec = st.slider('Number of recommendations', 1, 10, 5)
-    if st.button('Recommend'):
-        recs = recommend(selected_track, selected_artist, df, model, text_pipeline, numerical_pipeline, text_features, numerical_features, feature_weights, top_n=num_rec)
-        if recs:
-            st.markdown(f"### Recommendations for **{selected_track}** by **{selected_artist}**:")
-            st.table(recs)
-        else:
-            st.warning('Track not found or no recommendations available.')
-
 if __name__ == '__main__':
     main()
