@@ -75,8 +75,6 @@ def spotify_link(artist, track):
     client_id     = os.getenv("SPOTIFY_CLIENT_ID")
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-    # client_id     = "83f63049def741f48e05e1d2b0b89bad"
-    # client_secret = "97c4c4a9f5564091818655a9183a6673"
 
     auth_header   = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
