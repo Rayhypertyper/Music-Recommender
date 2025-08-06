@@ -72,8 +72,8 @@ def recommend(song: str, artist: str, df: pd.DataFrame, model, text_pipeline, nu
 
 def spotify_link(artist, track):
     
-    client_id     = os.getenv("SPOTIFY_CLIENT_ID")
-    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    client_id = st.secrets["spotify"]["client_id"]
+    client_secret = st.secrets["spotify"]["client_secret"]
 
 
     auth_header   = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
