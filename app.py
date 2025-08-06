@@ -1,35 +1,68 @@
 import streamlit as st
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+import joblib
+import zipfile
+import os
 
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.fillna('', inplace=True)
-    df['combined_features'] = df['genre'] + ' ' + df['artist_name'] + ' ' + df['track_name']
     return df
 
-@st.cache_data
-def compute_similarity_matrix(df: pd.DataFrame):
-    vectorizer = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = vectorizer.fit_transform(df['combined_features'])
-    return cosine_similarity(tfidf_matrix, tfidf_matrix)
 
-def recommend(track: str, df: pd.DataFrame, sim_matrix, top_n: int = 5):
-    if track not in df['track_name'].values:
+@st.cache_resource
+def load_components(zip_path: str):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall('model_tmp')
+    model = joblib.load(os.path.join('model_tmp', 'nn_model.joblib'))
+    text_pipeline = joblib.load(os.path.join('model_tmp', 'text_pipeline.joblib')) if os.path.exists(os.path.join('model_tmp', 'text_pipeline.joblib')) else None
+    numerical_pipeline = joblib.load(os.path.join('model_tmp', 'numerical_pipeline.joblib')) if os.path.exists(os.path.join('model_tmp', 'numerical_pipeline.joblib')) else None
+    text_features = joblib.load(os.path.join('model_tmp', 'text_features.joblib'))
+    numerical_features = joblib.load(os.path.join('model_tmp', 'numerical_features.joblib'))
+    return model, text_pipeline, numerical_pipeline, text_features, numerical_features
+
+def recommend(song: str, artist: str, df: pd.DataFrame, model, text_pipeline, numerical_pipeline, text_features, numerical_features, feature_weights, top_n: int = 5):
+    # Find the index of the query song
+    query_series = df.loc[(df['track_name'].str.lower() == song.lower()) & (df['artist_name'].str.lower() == artist.lower())]
+    if query_series.empty:
         return []
-    idx = df.index[df['track_name'] == track][0]
-    scores = list(enumerate(sim_matrix[idx]))
-    scores = sorted([s for s in scores if s[1] < 1.0], key=lambda x: x[1], reverse=True)
-    recommendations = []
-    for i, score in scores[:top_n]:
-        recommendations.append({
-            'Track': df.at[i, 'track_name'],
-            'Artist': df.at[i, 'artist_name'],
-            'Score': f"{score:.2f}"
-        })
-    return recommendations
+    idx = query_series.index[0]
+    query_data = df.iloc[[idx]].copy()
+    # Transform query song features separately
+    if text_pipeline and text_features:
+        combined_query_text = query_data[text_features].fillna('').agg(' '.join, axis=1)
+        query_text_matrix = text_pipeline.transform(combined_query_text)
+    else:
+        query_text_matrix = None
+    query_numerical_matrix = numerical_pipeline.transform(query_data[numerical_features]) if numerical_pipeline else None
+    # Combine and weight query features
+    import numpy as np
+    from scipy.sparse import hstack
+    if query_text_matrix is not None and query_numerical_matrix is not None:
+        if hasattr(query_numerical_matrix, 'toarray'):
+            query_numerical_matrix = query_numerical_matrix.toarray()
+        weighted_query_text_matrix = query_text_matrix * sum(feature_weights[col] for col in text_features) / len(text_features) if text_features else query_text_matrix
+        weighted_query_numerical_matrix = query_numerical_matrix * sum(feature_weights[col] for col in numerical_features) / len(numerical_features) if numerical_features else query_numerical_matrix
+        query_vec = hstack([weighted_query_text_matrix, weighted_query_numerical_matrix])
+    elif query_text_matrix is not None:
+        query_vec = query_text_matrix * sum(feature_weights[col] for col in text_features) / len(text_features) if text_features else query_text_matrix
+    elif query_numerical_matrix is not None:
+        query_vec = query_numerical_matrix * sum(feature_weights[col] for col in numerical_features) / len(numerical_features) if numerical_features else query_numerical_matrix
+    else:
+        return []
+    distances, indices = model.kneighbors(query_vec, n_neighbors=top_n + 1)
+    recs = []
+    for dist, i in zip(distances[0], indices[0]):
+        if i != idx:
+            recs.append({
+                'Track': df.at[i, 'track_name'],
+                'Artist': df.at[i, 'artist_name'],
+                'Score': f"{1 - dist:.2f}"
+            })
+        if len(recs) == top_n:
+            break
+    return recs
 
 def main():
     st.set_page_config(page_title='🎵 Music Recommender', layout='wide')
@@ -41,8 +74,27 @@ def main():
 
     with st.spinner('Loading data…'):
         df = load_data(data_path)
-    with st.spinner('Computing similarity matrix…'):
-        sim_matrix = compute_similarity_matrix(df)
+    with st.spinner('Loading trained model components…'):
+        model, text_pipeline, numerical_pipeline, text_features, numerical_features = load_components('music_recommender_model.zip')
+
+    # Feature weights (should match training)
+    feature_weights = {
+        'artist_name': 3.0,
+        'track_name': 1.0,
+        'genre': 3.5,
+        'lyrics': 2.2,
+        'world/life': 3.0,
+        'violence': 3.0,
+        'dating': 3.0,
+        'release_date': 2.5,
+        'len': 1.0,
+        'danceability': 3.0,
+        'loudness': 3.0,
+        'acousticness': 3.0,
+        'instrumentalness': 3.0,
+        'valence': 3.0,
+        'energy': 3.0
+    }
 
     st.markdown('## Dataset Overview')
     col1, col2, col3 = st.columns(3)
@@ -56,12 +108,14 @@ def main():
 
     st.markdown('## Get Recommendations')
     track_list = sorted(df['track_name'].unique())
+    artist_list = sorted(df['artist_name'].unique())
     selected_track = st.selectbox('Select a track', track_list)
+    selected_artist = st.selectbox('Select an artist', artist_list)
     num_rec = st.slider('Number of recommendations', 1, 10, 5)
     if st.button('Recommend'):
-        recs = recommend(selected_track, df, sim_matrix, top_n=num_rec)
+        recs = recommend(selected_track, selected_artist, df, model, text_pipeline, numerical_pipeline, text_features, numerical_features, feature_weights, top_n=num_rec)
         if recs:
-            st.markdown(f"### Recommendations for **{selected_track}**:")
+            st.markdown(f"### Recommendations for **{selected_track}** by **{selected_artist}**:")
             st.table(recs)
         else:
             st.warning('Track not found or no recommendations available.')
