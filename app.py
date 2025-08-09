@@ -64,7 +64,7 @@ def recommend(song: str, artist: str, df: pd.DataFrame, model, text_pipeline, nu
             recs.append({
                 'Track': df.at[i, 'track_name'],
                 'Artist': df.at[i, 'artist_name'],
-                'Score': f"{1 - dist:.2f}"
+                'Score': f"{0.97 - dist:.2f}"
             })
         if len(recs) == top_n:
             break
@@ -149,6 +149,7 @@ def main():
                 artist = r['Artist']
                 song  = r['Track']
                 a = f"https://open.spotify.com/embed/track/{spotify_link(artist, song)}"
+                # if spotify_link(artist, song) == None:
                 # Build and render the Spotify iframe
                 iframe = f"""
                 <iframe style="border-radius:12px"
@@ -159,6 +160,8 @@ def main():
                 </iframe>
                 """
                 st_html(iframe, height=100)
+        else:
+            st.write("This artist does not have this track, please select an appropriate track for the artist")
 
         st.markdown('## Dataset Overview')
     col1, col2, col3 = st.columns(3)
